@@ -266,6 +266,49 @@ function setup_default_post_types( $args, $post_type ) {
 
 add_filter( 'register_post_type_args', 'setup_default_post_types', 10, 2 );
 
+// 1. Keep the custom field registration intact
+add_action('graphql_register_types', function () {
+    register_graphql_field('RootQueryToPostConnectionWhereArgs', 'categorySlug', [
+        'type'        => 'String',
+        'description' => __('Strictly enforce filtering posts by category slug.', 'your-textdomain'),
+    ]);
+});
+
+// 2. Intercept the arguments from GraphQL and save them temporarily
+add_filter('graphql_map_input_fields_to_wp_query', function ($query_args, $where_args) {
+    if (isset($where_args['categorySlug'])) {
+        // Cache our custom slug inside a non-standard parameter to look for in our SQL filters
+        $query_args['graphql_strict_category'] = sanitize_text_field($where_args['categorySlug']);
+    }
+    return $query_args;
+}, 10, 2);
+
+// 3. Inject the explicit INNER JOIN into the raw SQL string
+add_filter('posts_join', function ($join, $query) {
+    if ($query->get('graphql_strict_category')) {
+        global $wpdb;
+        // Join the term relationships table and the taxonomy table
+        $join .= " INNER JOIN $wpdb->term_relationships ON ($wpdb->posts.ID = $wpdb->term_relationships.object_id) ";
+        $join .= " INNER JOIN $wpdb->term_taxonomy ON ($wpdb->term_relationships.term_taxonomy_id = $wpdb->term_taxonomy.term_taxonomy_id) ";
+        $join .= " INNER JOIN $wpdb->terms ON ($wpdb->term_taxonomy.term_id = $wpdb->terms.term_id) ";
+    }
+    return $join;
+}, 10, 2);
+
+// 4. Inject the explicit WHERE clause matching the category slug into the raw SQL string
+add_filter('posts_where', function ($where, $query) {
+    if ($query->get('graphql_strict_category')) {
+        global $wpdb;
+        $category_slug = esc_sql($query->get('graphql_strict_category'));
+        
+        // Force the taxonomy to be 'category' and match our slug
+        $where .= " AND $wpdb->term_taxonomy.taxonomy = 'category' ";
+        $where .= " AND $wpdb->terms.slug = '$category_slug' ";
+    }
+    return $where;
+}, 10, 2);
+
+
 add_action( 'graphql_register_types', function() {
 
     // 1. Define and register your custom object type structure
